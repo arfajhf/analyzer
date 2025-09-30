@@ -1,0 +1,6 @@
+{
+    "require": {
+        "phpoffice/phpspreadsheet": "^5.1",
+        "umpirsky/country-list": "^2.0"
+    }
+}
