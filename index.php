@@ -1,7 +1,7 @@
 <?php
 // Mulai session
 session_start();
-// Paksa PHP untuk menampilkan error
+// Paksa PHP untuk menampilkan error agar mudah di-debug
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
@@ -13,18 +13,13 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 
 // --- FUNGSI NORMALISASI OTOMATIS ---
 function normalizeCountryName($countryName) {
-    // ... (fungsi ini tidak berubah)
-    static $englishCountries = null;
-    static $indonesianLookup = null;
-    static $cache = [];
+    static $englishCountries = null, $indonesianLookup = null, $cache = [];
     if ($englishCountries === null) {
         if (file_exists(__DIR__ . '/vendor/umpirsky/country-list/data/en/country.php')) {
             $englishCountries = require __DIR__ . '/vendor/umpirsky/country-list/data/en/country.php';
             $indonesianCountries = require __DIR__ . '/vendor/umpirsky/country-list/data/id/country.php';
             $indonesianLookup = array_flip($indonesianCountries);
-        } else {
-            return $countryName;
-        }
+        } else { return $countryName; }
     }
     $name = trim($countryName);
     $upperName = strtoupper($name);
@@ -37,40 +32,25 @@ function normalizeCountryName($countryName) {
     $shortestDistance = -1;
     foreach ($englishCountries as $standardName) {
         $distance = levenshtein(strtolower($name), strtolower($standardName));
-        if ($shortestDistance < 0 || $distance < $shortestDistance) {
-            $shortestDistance = $distance;
-            $bestMatch = $standardName;
-        }
+        if ($shortestDistance < 0 || $distance < $shortestDistance) { $shortestDistance = $distance; $bestMatch = $standardName; }
     }
     if ($shortestDistance <= 3) { $cache[$name] = $bestMatch; return $bestMatch; }
     $cache[$name] = $name;
     return $name;
 }
 
-// --- BAGIAN KONFIGURASI NAMA KOLOM ---
-$kolom_negara_meta = 'Negara';
-$kolom_biaya_meta = 'Jumlah yang dibelanjakan (IDR)';
-$kolom_negara_adsense = 'Country';
-$kolom_earning_adsense = 'Estimated earnings (IDR)';
-
 // --- FUNGSI PEMBACA FILE ---
-function readDataFile($filePath, $headerKeyword) {
-    // ... (Fungsi ini tidak berubah)
+function readDataFile($filePath, &$header) {
     $spreadsheet = IOFactory::load($filePath);
     $worksheet = $spreadsheet->getActiveSheet();
-    $data = [];
-    $header = [];
-    $headerFound = false;
+    $data = []; $headerFound = false;
     foreach ($worksheet->getRowIterator() as $row) {
-        $cellIterator = $row->getCellIterator();
-        $cellIterator->setIterateOnlyExistingCells(FALSE);
+        $cellIterator = $row->getCellIterator(); $cellIterator->setIterateOnlyExistingCells(FALSE);
         $rowData = [];
         foreach ($cellIterator as $cell) { $rowData[] = $cell->getValue(); }
         if (!$headerFound) {
-            if (in_array($headerKeyword, $rowData)) {
-                $header = $rowData;
-                $headerFound = true;
-                continue; 
+            if (in_array('Country', $rowData) || in_array('Negara', $rowData)) {
+                $header = $rowData; $headerFound = true; continue; 
             }
         }
         if ($headerFound) {
@@ -85,13 +65,32 @@ function readDataFile($filePath, $headerKeyword) {
 }
 
 // Logika pemrosesan file
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['meta_file']) && isset($_FILES['adsense_file'])) {
-    $metaFile = $_FILES['meta_file']['tmp_name'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['meta_files']) && isset($_FILES['adsense_file'])) {
+    
+    $metaData = [];
+    $metaHeader = [];
+    foreach ($_FILES['meta_files']['tmp_name'] as $tmpName) {
+        if (!empty($tmpName) && is_uploaded_file($tmpName)) {
+            $currentMetaData = readDataFile($tmpName, $metaHeader);
+            $metaData = array_merge($metaData, $currentMetaData);
+        }
+    }
+
     $adsenseFile = $_FILES['adsense_file']['tmp_name'];
-    $metaData = readDataFile($metaFile, $kolom_negara_meta);
-    $adsenseData = readDataFile($adsenseFile, $kolom_negara_adsense);
+    $adsenseHeader = [];
+    $adsenseData = readDataFile($adsenseFile, $adsenseHeader);
+    
+    if (in_array('Negara', $metaHeader)) {
+        $kolom_negara_meta = 'Negara'; $kolom_biaya_meta = 'Jumlah yang dibelanjakan (IDR)';
+    } else {
+        $kolom_negara_meta = 'Country'; $kolom_biaya_meta = 'Amount spent (IDR)';
+    }
+    $kolom_negara_adsense = 'Country';
+    $kolom_earning_adsense = 'Estimated earnings (IDR)';
+
     foreach ($metaData as &$row) { if (isset($row[$kolom_negara_meta])) { $row[$kolom_negara_meta] = normalizeCountryName($row[$kolom_negara_meta]); } } unset($row); 
     foreach ($adsenseData as &$row) { if (isset($row[$kolom_negara_adsense])) { $row[$kolom_negara_adsense] = normalizeCountryName($row[$kolom_negara_adsense]); } } unset($row);
+
     $metaGrouped = [];
     foreach ($metaData as $row) {
         if (!isset($row[$kolom_negara_meta]) || !isset($row[$kolom_biaya_meta])) continue;
@@ -106,34 +105,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['meta_file']) && isse
         if (!isset($adsenseGrouped[$country])) { $adsenseGrouped[$country] = ['total_earnings' => 0]; }
         $adsenseGrouped[$country]['total_earnings'] += (float) preg_replace('/[^\d.]/', '', $row[$kolom_earning_adsense]);
     }
+    
     $finalData = [];
     $allCountries = array_unique(array_merge(array_keys($metaGrouped), array_keys($adsenseGrouped)));
+    
+    $finalData = [];
+    $allCountries = array_unique(array_merge(array_keys($metaGrouped), array_keys($adsenseGrouped)));
+
     foreach ($allCountries as $country) {
         $spending = $metaGrouped[$country]['total_spending'] ?? 0;
         $earnings = $adsenseGrouped[$country]['total_earnings'] ?? 0;
+        
+        // Ini adalah 'penjaga gerbang'. Hanya jika spending lebih dari 0,
+        // data akan diproses dan dimasukkan ke hasil akhir.
         if ($spending > 0) {
             $roi = (($earnings - $spending) / $spending) * 100;
-            $finalData[$country] = [ 'total_spending' => $spending, 'total_earnings' => $earnings, 'roi' => $roi ];
+
+            $finalData[$country] = [
+                'total_spending' => $spending,
+                'total_earnings' => $earnings,
+                'roi' => $roi
+            ];
         }
     }
     
-    // Urutkan berdasarkan abjad SEBELUM disimpan ke session
-    if (!empty($finalData)) {
-        ksort($finalData);
-    }
+    if (!empty($finalData)) { ksort($finalData); }
 
     $_SESSION['analysis_result'] = $finalData;
     header('Location: ' . $_SERVER['PHP_SELF']);
     exit;
 }
 
-// Ambil data hasil analisis dari session untuk ditampilkan
 $analysisResult = $_SESSION['analysis_result'] ?? [];
-
-// PASTIKAN LAGI DATANYA TERURUT SESUAI ABJAD SEBELUM DITAMPILKAN
-if (!empty($analysisResult)) {
-    ksort($analysisResult);
-}
+if (!empty($analysisResult)) { ksort($analysisResult); }
 ?>
 
 <!DOCTYPE html>
@@ -148,9 +152,16 @@ if (!empty($analysisResult)) {
     <div class="container mt-5">
         <h2 class="mb-4 text-center">ROI Analyzer by Country</h2>
         <div class="table-responsive">
-            <button type="button" class="btn btn-outline-primary btn-sm mb-3" data-bs-toggle="modal" data-bs-target="#uploadModal">
-                + Upload & Analisis File Excel
-            </button>
+            
+            <div class="mb-3">
+                <button type="button" class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#uploadModal" data-wl-type="1">
+                    Analisis 1 WL (1 Meta + 1 AdSense)
+                </button>
+                <button type="button" class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#uploadModal" data-wl-type="2">
+                    Analisis 2 WL (2 Meta + 1 AdSense)
+                </button>
+            </div>
+            
             <table class="table table-hover table-bordered">
                 <thead class="table-info">
                     <tr>
@@ -165,29 +176,25 @@ if (!empty($analysisResult)) {
                 </thead>
                 <tbody>
                     <?php if (empty($analysisResult)): ?>
-                        <tr>
-                            <td colspan="7" class="text-center">Belum ada data. Silakan upload file untuk memulai analisis.</td>
-                        </tr>
+                        <tr><td colspan="7" class="text-center">Belum ada data. Silakan pilih mode analisis.</td></tr>
                     <?php else: ?>
                         <?php $rank = 1; foreach ($analysisResult as $country => $data): ?>
                             <tr>
-                                <td class="text-center">
-                                    <input class="form-check-input row-highlighter" type="checkbox">
-                                </td>
+                                <td class="text-center"><input class="form-check-input row-highlighter" type="checkbox"></td>
                                 <th scope="row"><?php echo $rank++; ?></th>
                                 <td><?php echo htmlspecialchars($country); ?></td>
                                 <td><?php echo 'Rp ' . number_format($data['total_spending'], 0, ',', '.'); ?></td>
                                 <td><?php echo 'Rp ' . number_format($data['total_earnings'], 0, ',', '.'); ?></td>
                                 <td class="fw-bold">
-                                    <span class="<?php echo $data['roi'] >= 0 ? 'text-success' : 'text-danger'; ?>">
-                                        <?php echo number_format($data['roi'], 2, ',', '.') . '%'; ?>
-                                    </span>
+                                    <?php if ($data['roi'] !== null): ?>
+                                        <span class="<?php echo $data['roi'] >= 0 ? 'text-success' : 'text-danger'; ?>"><?php echo number_format($data['roi'], 2, ',', '.') . '%'; ?></span>
+                                    <?php else: ?>
+                                        <span class="text-muted">N/A</span>
+                                    <?php endif; ?>
                                 </td>
                                 <td>
-                                    <?php if ($data['roi'] < 100): ?>
-                                        <span class="badge bg-warning text-dark">Hapus Negara</span>
-                                    <?php else: ?>
-                                        <span class="badge bg-success">Pertahankan</span>
+                                    <?php if ($data['roi'] !== null): ?>
+                                        <?php if ($data['roi'] < 100): ?><span class="badge bg-warning text-dark">Hapus Negara</span><?php else: ?><span class="badge bg-success">Pertahankan</span><?php endif; ?>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -208,8 +215,12 @@ if (!empty($analysisResult)) {
                 <form action="" method="POST" enctype="multipart/form-data">
                     <div class="modal-body">
                         <div class="mb-3">
-                            <label for="meta_file" class="form-label">File Meta Ads (.xlsx / .csv)</label>
-                            <input type="file" class="form-control" id="meta_file" name="meta_file" required>
+                            <label for="meta_file_1" class="form-label">File Meta Ads 1 (.xlsx / .csv)</label>
+                            <input type="file" class="form-control" id="meta_file_1" name="meta_files[]" required>
+                        </div>
+                        <div class="mb-3" id="meta_file_2_wrapper" style="display: none;">
+                            <label for="meta_file_2" class="form-label">File Meta Ads 2 (.xlsx / .csv)</label>
+                            <input type="file" class="form-control" id="meta_file_2" name="meta_files[]">
                         </div>
                         <div class="mb-3">
                             <label for="adsense_file" class="form-label">File Google AdSense (.xlsx / .csv)</label>
@@ -226,18 +237,45 @@ if (!empty($analysisResult)) {
     </div>
     
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    
     <script>
-        const checkboxes = document.querySelectorAll('.row-highlighter');
-        checkboxes.forEach(checkbox => {
+        // Script untuk checkbox highlighter
+        document.querySelectorAll('.row-highlighter').forEach(checkbox => {
             checkbox.addEventListener('change', function() {
                 const row = this.closest('tr');
-                if (this.checked) {
-                    row.classList.add('table-danger');
-                } else {
-                    row.classList.remove('table-danger');
-                }
+                this.checked ? row.classList.add('table-danger') : row.classList.remove('table-danger');
             });
         });
+
+        // Script untuk modal interaktif 1 WL / 2 WL
+        const uploadModal = document.getElementById('uploadModal');
+        uploadModal.addEventListener('show.bs.modal', function (event) {
+            const button = event.relatedTarget;
+            const wlType = button.getAttribute('data-wl-type');
+            const modalTitle = uploadModal.querySelector('.modal-title');
+            const metaFile2Wrapper = document.getElementById('meta_file_2_wrapper');
+            const metaFile2Input = document.getElementById('meta_file_2');
+
+            if (wlType === '2') {
+                modalTitle.textContent = 'Analisis 2 WL (2 Meta + 1 AdSense)';
+                metaFile2Wrapper.style.display = 'block';
+                metaFile2Input.required = true;
+            } else {
+                modalTitle.textContent = 'Analisis 1 WL (1 Meta + 1 AdSense)';
+                metaFile2Wrapper.style.display = 'none';
+                metaFile2Input.required = false;
+            }
+        });
     </script>
+    <footer class="mt-5 py-4 text-center">
+        <div class="container">
+            <hr>
+            <p class="text-muted mb-0">
+                © <?php echo date('Y'); ?> ROI Analyzer by Country - V1.2
+            </p>
+            </p>
+            <small class="text-muted">Dibuat untuk Tim Analis</small>
+        </div>
+    </footer>
 </body>
 </html>
