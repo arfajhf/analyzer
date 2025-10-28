@@ -336,7 +336,7 @@ if (!empty($analysisResult)) {
     </script>
 
     <footer class="mt-5 py-4 text-center">
-         <div class="container"> <hr> <p class="text-muted mb-0"> © <?php echo date('Y'); ?> ROI Analyzer by Country - V1.2 </p> <small class="text-muted">Dibuat untuk Tim Analis</small> </div>
+         <div class="container"> <hr> <p class="text-muted mb-0"> © <?php echo date('Y'); ?> ROI Analyzer by Country - V1.3 </p> <small class="text-muted">Dibuat untuk Tim Analis</small> </div>
     </footer>
 </body>
 </html>
